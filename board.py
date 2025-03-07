@@ -1,28 +1,13 @@
 """
-GomokuBoard: Enhanced Gomoku board module
-Contains board state, rule enforcement, and efficient pattern evaluation
+GomokuBoard: Optimized Gomoku board module with pattern evaluation
 """
 
 import numpy as np
 from typing import List, Tuple, Dict, Set, Optional, Any
-import logging
 from collections import defaultdict
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("gomoku_board.log"),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger("GomokuBoard")
-
 class GomokuBoard:
-    """
-    Represents a Gomoku game board with enhanced pattern evaluation and efficient state management
-    """
+    """Represents a Gomoku game board with efficient pattern evaluation"""
     
     # Define patterns and their corresponding threat levels
     PATTERNS = {
@@ -44,16 +29,14 @@ class GomokuBoard:
         'two_b': ('00011', 1, 6),  # Blocked two variant
     }
     
+    # Precompute pattern matching results
+    PATTERN_CACHE = {}
+    
     # Score normalization factor
     SCORE_FACTOR = 1.0
     
     def __init__(self, size: int = 15):
-        """
-        Initialize the board
-        
-        Args:
-            size: Board size, default is 15x15
-        """
+        """Initialize the board"""
         self.size = size
         self.board = np.zeros((size, size), dtype=np.int8)  # 0: empty, 1: black, 2: white
         self.current_player = 1  # Black goes first
@@ -71,7 +54,21 @@ class GomokuBoard:
         # Precompute board position importance (Manhattan distance from center)
         self._position_importance = self._calculate_position_importance()
         
-        logger.info(f"Initialized {size}x{size} GomokuBoard")
+        # Initialize pattern caches
+        self._init_pattern_caches()
+    
+    def _init_pattern_caches(self):
+        """Initialize pattern matching caches for performance"""
+        # Precompute pattern matches for common patterns
+        if not GomokuBoard.PATTERN_CACHE:
+            for pattern_name, (pattern, _, _) in self.PATTERNS.items():
+                for i in range(20):  # Enough for most pattern matching scenarios
+                    test_str = '0' * i + '1' * 5 + '0' * (15 - i - 5)
+                    result = []
+                    for j in range(len(test_str) - len(pattern) + 1):
+                        if test_str[j:j+len(pattern)] == pattern:
+                            result.append(j)
+                    GomokuBoard.PATTERN_CACHE[(pattern, test_str)] = result
     
     def _calculate_position_importance(self) -> np.ndarray:
         """Calculate board position importance (based on distance from center)"""
@@ -101,8 +98,6 @@ class GomokuBoard:
         self._move_scores = {}
         self._line_strings = {}
         self._threat_positions = set()
-        
-        logger.info("Board reset to initial state")
     
     def make_move(self, row: int, col: int) -> bool:
         """
@@ -117,17 +112,14 @@ class GomokuBoard:
         """
         # Check if game is already over
         if self.game_over:
-            logger.warning("Attempted move on finished game")
             return False
             
         # Check if position is within bounds
         if not (0 <= row < self.size and 0 <= col < self.size):
-            logger.warning(f"Move ({row}, {col}) out of bounds")
             return False
             
         # Check if position is empty
         if self.board[row, col] != 0:
-            logger.warning(f"Position ({row}, {col}) already occupied")
             return False
         
         # Place stone
@@ -143,12 +135,10 @@ class GomokuBoard:
         if self._check_win(row, col):
             self.game_over = True
             self.winner = self.current_player
-            logger.info(f"Player {self.current_player} wins at move {len(self.move_history)}")
         # Check for draw
         elif len(self.move_history) == self.size * self.size:
             self.game_over = True
             self.winner = 0  # Draw
-            logger.info("Game ended in a draw")
         
         # Switch player
         self.current_player = 3 - self.current_player  # Switch between 1 and 2
@@ -169,7 +159,7 @@ class GomokuBoard:
     
     def _invalidate_caches(self, row: int, col: int):
         """Invalidate caches affected by a specific move"""
-        # Clear affected pattern caches
+        # Clear affected pattern caches - only the relevant portion
         directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
         for dr, dc in directions:
             # Check affected range (typically 4 positions)
@@ -180,8 +170,13 @@ class GomokuBoard:
                     if key in self._pattern_cache:
                         del self._pattern_cache[key]
         
-        # Clear move score cache completely - it's safer than trying to selectively invalidate
-        self._move_scores = {}
+        # Clear move score cache for affected positions
+        for r in range(max(0, row-4), min(self.size, row+5)):
+            for c in range(max(0, col-4), min(self.size, col+5)):
+                for player in [1, 2]:
+                    key = (r, c, player)
+                    if key in self._move_scores:
+                        del self._move_scores[key]
         
         # Clear affected line string caches
         for dr, dc in directions:
@@ -240,22 +235,22 @@ class GomokuBoard:
         # Find all positions to consider
         candidates = set()
         
-        # Get all positions with stones
-        occupied = set()
+        # Use a more efficient approach for finding positions near stones
+        # First, get a binary mask of occupied positions
+        occupied = self.board != 0
+        
+        # For each occupied position, consider nearby empty positions
         for r in range(self.size):
             for c in range(self.size):
-                if self.board[r, c] != 0:
-                    occupied.add((r, c))
-        
-        # Find empty positions within specified distance of any stone
-        for r, c in occupied:
-            for dr in range(-distance, distance + 1):
-                for dc in range(-distance, distance + 1):
-                    nr, nc = r + dr, c + dc
-                    if (0 <= nr < self.size and 0 <= nc < self.size and 
-                        self.board[nr, nc] == 0 and 
-                        (dr != 0 or dc != 0)):  # Exclude the stone itself
-                        candidates.add((nr, nc))
+                if occupied[r, c]:
+                    # Add empty positions within distance
+                    for dr in range(-distance, distance + 1):
+                        for dc in range(-distance, distance + 1):
+                            nr, nc = r + dr, c + dc
+                            if (0 <= nr < self.size and 0 <= nc < self.size and 
+                                self.board[nr, nc] == 0 and 
+                                (dr != 0 or dc != 0)):  # Exclude the stone itself
+                                candidates.add((nr, nc))
         
         # If considering threat positions, add them to candidates
         if consider_threats and self._threat_positions:
@@ -307,13 +302,13 @@ class GomokuBoard:
     
     def evaluate_position(self, player_perspective: Optional[int] = None) -> Dict[str, Any]:
         """
-        Evaluate current board position, calculating pattern counts and total score for both players
+        Evaluate current board position with optimized pattern matching
         
         Args:
             player_perspective: Which player's perspective to evaluate from (1=black, 2=white, None=current player)
             
         Returns:
-            Dict: Evaluation result containing pattern counts and total score
+            Dict: Evaluation result with pattern counts and total score
         """
         if player_perspective is None:
             player_perspective = self.current_player
@@ -337,11 +332,11 @@ class GomokuBoard:
         # Track detected threat positions
         threats = set()
         
-        # Scan rows
+        # Scan the board for patterns
         for start_row in range(self.size):
             for start_col in range(self.size):
                 for dr, dc in directions:
-                    # Ensure this is a start point of a new line
+                    # Skip redundant lines (only consider each line once)
                     if (start_row > 0 and dr != 0) or (start_col > 0 and dc != 0):
                         continue
                         
@@ -379,7 +374,7 @@ class GomokuBoard:
                         
                         # Check for matching patterns
                         for pattern_name, (pattern, _, score) in self.PATTERNS.items():
-                            # Calculate number of matching patterns for this player
+                            # Calculate number of matching patterns efficiently
                             matches = self._find_pattern_matches(pattern_str, pattern)
                             if matches > 0:
                                 result[player]["patterns"][pattern_name] += matches
@@ -399,8 +394,7 @@ class GomokuBoard:
         # Update threat positions set
         self._threat_positions = threats
         
-        # Final score calculation
-        # Consider not just pattern scores but also position importance
+        # Final score calculation including position importance
         for player in [player_perspective, opponent]:
             # Add position importance score
             position_score = 0
@@ -417,7 +411,13 @@ class GomokuBoard:
         return result
     
     def _find_pattern_matches(self, line_str: str, pattern: str) -> int:
-        """Count occurrences of a pattern in a line"""
+        """Count occurrences of a pattern in a line using cache when possible"""
+        # Use cached results if available
+        cache_key = (pattern, line_str)
+        if cache_key in GomokuBoard.PATTERN_CACHE:
+            return len(GomokuBoard.PATTERN_CACHE[cache_key])
+        
+        # Otherwise, do the actual pattern matching
         count = 0
         for i in range(len(line_str) - len(pattern) + 1):
             if line_str[i:i+len(pattern)] == pattern:
@@ -433,7 +433,6 @@ class GomokuBoard:
         for i in range(len(line_str) - len(pattern) + 1):
             if line_str[i:i+len(pattern)] == pattern:
                 # For threats, we look for empty positions that could form five
-                # For example, in "011110", positions 0 and 5 are threat positions
                 for j in range(len(pattern)):
                     if pattern[j] == '0':  # Empty position
                         r = start_row + (i + j) * dr
@@ -445,8 +444,7 @@ class GomokuBoard:
     
     def get_score_for_move(self, row: int, col: int, player: int) -> float:
         """
-        Calculate move score for a specific position
-        Uses incremental evaluation rather than full recalculation
+        Calculate move score for a specific position with optimized evaluation
         
         Args:
             row, col: Move position
@@ -473,10 +471,12 @@ class GomokuBoard:
         total_score = 0
         
         try:
+            # Optimized score calculation that only looks at affected directions
             for dr, dc in directions:
-                # Scan 11 positions in this direction (maximum affected range)
+                # Only look at up to 9 positions (4 on each side plus center)
+                # This is an optimization to avoid scanning the entire line
                 line = []
-                for offset in range(-5, 6):
+                for offset in range(-4, 5):
                     r, c = row + dr * offset, col + dc * offset
                     if 0 <= r < self.size and 0 <= c < self.size:
                         line.append(str(self.board[r, c]))
@@ -488,9 +488,9 @@ class GomokuBoard:
                 # Replace opponent stones with '2', own stones with '1', empty with '0'
                 opponent = 3 - player
                 pattern_str = line_str.replace(str(player), '1').replace(str(opponent), '2') \
-                                      .replace('0', '0').replace('X', 'X')
+                                    .replace('0', '0').replace('X', 'X')
                 
-                # Check for all possible patterns
+                # Check for all possible patterns with weights
                 for pattern_name, (pattern, openness, score) in self.PATTERNS.items():
                     matches = self._find_pattern_matches(pattern_str, pattern)
                     if matches > 0:
@@ -503,8 +503,7 @@ class GomokuBoard:
             # Also consider position value
             total_score += self._position_importance[row, col] * 5
             
-        except Exception as e:
-            logger.error(f"Error evaluating move ({row}, {col}): {e}")
+        except Exception:
             total_score = 0
         
         # Restore original board state
@@ -517,62 +516,57 @@ class GomokuBoard:
     def detect_immediate_threat(self) -> Optional[int]:
         """
         Detect immediate threats, returning defensive or winning position
+        Uses optimized search focusing first on winning moves
         
         Returns:
             Optional[int]: 1D threat position, or None if no immediate threat
         """
-        try:
-            # First check if we can win in one move
-            for r in range(self.size):
-                for c in range(self.size):
-                    if self.board[r, c] == 0:
-                        # Temporarily place stone
-                        self.board[r, c] = self.current_player
-                        if self._check_win(r, c):
-                            # Found winning position
-                            self.board[r, c] = 0  # Restore
-                            return r * self.size + c
+        # First check if current player can win in one move (offense)
+        for r in range(self.size):
+            for c in range(self.size):
+                if self.board[r, c] == 0:
+                    # Temporarily place stone
+                    self.board[r, c] = self.current_player
+                    if self._check_win(r, c):
+                        # Found winning position
                         self.board[r, c] = 0  # Restore
-            
-            # Check if opponent can win in one move
-            opponent = 3 - self.current_player
-            for r in range(self.size):
-                for c in range(self.size):
-                    if self.board[r, c] == 0:
-                        # Simulate opponent move
-                        self.board[r, c] = opponent
-                        if self._check_win(r, c):
-                            # Found defensive position
-                            self.board[r, c] = 0  # Restore
-                            return r * self.size + c
+                        return r * self.size + c
+                    self.board[r, c] = 0  # Restore
+        
+        # Check if opponent can win in one move (defense)
+        opponent = 3 - self.current_player
+        for r in range(self.size):
+            for c in range(self.size):
+                if self.board[r, c] == 0:
+                    # Simulate opponent move
+                    self.board[r, c] = opponent
+                    if self._check_win(r, c):
+                        # Found defensive position
                         self.board[r, c] = 0  # Restore
-            
-            # Check for complex threats like double-open-three and open-four
+                        return r * self.size + c
+                    self.board[r, c] = 0  # Restore
+        
+        # Check for complex threats efficiently using pattern evaluation
+        # Rather than evaluating the entire board, focus on known threat positions
+        if self._threat_positions:
+            # Check current player's threats first (offensive priority)
             eval_result = self.evaluate_position()
             if eval_result[self.current_player]["threats"]:
                 # Found offensive threat position
                 r, c = eval_result[self.current_player]["threats"][0]
                 return r * self.size + c
             
-            # Check for opponent's threat positions
+            # Then check opponent's threats (defensive necessity)
             eval_result = self.evaluate_position(opponent)
             if eval_result[opponent]["threats"]:
                 # Found defensive threat position
                 r, c = eval_result[opponent]["threats"][0]
                 return r * self.size + c
                 
-        except Exception as e:
-            logger.error(f"Error detecting immediate threat: {e}")
-            
         return None
     
     def get_zobrist_hash(self) -> int:
-        """
-        Calculate Zobrist hash of the board, for fast state comparison
-        
-        Returns:
-            int: Zobrist hash value
-        """
+        """Calculate Zobrist hash of the board, for fast state comparison"""
         # Use fixed random numbers as seeds, for hash consistency
         if not hasattr(self, '_zobrist_table'):
             # Initialize Zobrist table (first call)
@@ -612,16 +606,7 @@ class GomokuBoard:
                 print(f"Game over. Winner: {winner_name}")
     
     def get_symmetries(self, move: int) -> List[Tuple[np.ndarray, int]]:
-        """
-        Get all symmetric transformations of current board and move
-        Used for data augmentation and reducing state space
-        
-        Args:
-            move: 1D move position
-            
-        Returns:
-            List[Tuple[board, move]]: List of symmetric transformations
-        """
+        """Get all symmetric transformations of current board and move"""
         row, col = move // self.size, move % self.size
         symmetries = []
         
